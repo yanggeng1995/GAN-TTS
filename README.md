@@ -13,6 +13,9 @@ A pytorch implementation of the GAN-TTS: HIGH FIDELITY SPEECH SYNTHESIS WITH ADV
 ## Inference
 * python generate.py --input="data/test"
 
+## Results
+* In training...
+
 ## Attention
 * I did not use the loss function mentioned in the paper. I modified the loss function and learn from MelGAN(https://arxiv.org/pdf/1910.06711.pdf).
 
