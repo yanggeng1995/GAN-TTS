@@ -82,7 +82,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--input', type=str, default='data/test', help='Directory of tests data')
     parser.add_argument('--num_workers',type=int, default=4, help='Number of dataloader workers.')
-    parser.add_argument('--resume', type=str, default="ema_logdir")
+    parser.add_argument('--resume', type=str, default="logdir")
     parser.add_argument('--local_condition_dim', type=int, default=80)
     parser.add_argument('--z_dim', type=int, default=128)
     parser.add_argument('--use_cuda', type=_str_to_bool, default=False)

@@ -155,83 +155,70 @@ class ConditionalBatchNorm1d(nn.BatchNorm1d):
     
 class Multiple_Random_Window_Discriminators(nn.Module):
     def __init__(self,
-                 lc_channels):
+                 lc_channels,
+                 window_size=(2, 4, 8, 16, 30),
+                 upsample_factor=120):
+
         super(Multiple_Random_Window_Discriminators, self).__init__()
         
         self.lc_channels = lc_channels
+        self.window_size = window_size
+        self.upsample_factor = upsample_factor
 
-        self.udiscriminator1 = UnConditionalDBlocks(in_channels=1, factors=(5, 3),
-                                            out_channels=(128, 256))
-        self.udiscriminator2 = UnConditionalDBlocks(in_channels=2, factors=(5, 3), 
-                                            out_channels=(128, 256))
-        self.udiscriminator4 = UnConditionalDBlocks(in_channels=4, factors=(5, 3), 
-                                            out_channels=(128, 256))
-        self.udiscriminator8 = UnConditionalDBlocks(in_channels=8, factors=(5, 3), 
-                                            out_channels=(128, 256))
-        self.udiscriminator15 = UnConditionalDBlocks(in_channels=15, factors=(2, 2),
-                                            out_channels=(128, 256))
+        self.udiscriminators = nn.ModuleList([
+            UnConditionalDBlocks(in_channels=1, factors=(5, 3), out_channels=(128, 256)),
+            UnConditionalDBlocks(in_channels=2, factors=(5, 3), out_channels=(128, 256)),
+            UnConditionalDBlocks(in_channels=4, factors=(5, 3), out_channels=(128, 256)),
+            UnConditionalDBlocks(in_channels=8, factors=(5, 3), out_channels=(128, 256)),
+            UnConditionalDBlocks(in_channels=15, factors=(2, 2), out_channels=(128, 256)),
+        ])
+
+        self.discriminators = nn.ModuleList([
+            ConditionalDBlocks(in_channels=1, lc_channels=lc_channels,
+                               factors=(5, 3, 2, 2, 2), out_channels=(128, 128, 256, 256)),
+            ConditionalDBlocks(in_channels=2, lc_channels=lc_channels,
+                               factors=(5, 3, 2, 2), out_channels=(128, 256, 256)),
+            ConditionalDBlocks(in_channels=4, lc_channels=lc_channels,
+                               factors=(5, 3, 2), out_channels=(128, 256)),
+            ConditionalDBlocks(in_channels=8, lc_channels=lc_channels,
+                               factors=(5, 3), out_channels=(256,)),
+            ConditionalDBlocks(in_channels=15, lc_channels=lc_channels,
+                               factors=(2, 2, 2), out_channels=(128, 256)),
+        ])
+       
+    def forward(self, real_samples, fake_samples, conditions):
         
-        self.discriminator1 = ConditionalDBlocks(in_channels=1, lc_channels=lc_channels,
-                            factors=(5, 3, 2, 2, 2), out_channels=(128, 128, 256, 256))
-        self.discriminator2 = ConditionalDBlocks(in_channels=2, lc_channels=lc_channels,
-                            factors=(5, 3, 2, 2), out_channels=(128, 256, 256))
-        self.discriminator4 = ConditionalDBlocks(in_channels=4, lc_channels=lc_channels,
-                            factors=(5, 3, 2), out_channels=(128, 256))
-        self.discriminator8 = ConditionalDBlocks(in_channels=8, lc_channels=lc_channels,
-                            factors=(5, 3), out_channels=(256,))
-        self.discriminator15 = ConditionalDBlocks(in_channels=15, lc_channels=lc_channels,
-                            factors=(2, 2, 2), out_channels=(128, 256))
-        
-    def forward(self, inputs, conditions):
-        
-        outputs = []
+        real_outputs, fake_outputs = [], []
+        real_features, fake_features = [], []
         #unconditional discriminator
-        index = np.random.randint(inputs.size()[-1] - 240)
-        output = self.udiscriminator1(inputs[:, :, index : index + 240])
-        outputs.append(output)
-        index = np.random.randint(inputs.size()[-1] - 480)
-        output = self.udiscriminator2(inputs[:, :, index : index + 480])
-        outputs.append(output)
-        index = np.random.randint(inputs.size()[-1] - 960)
-        output = self.udiscriminator4(inputs[:, :, index : index + 960])
-        outputs.append(output)
-        index = np.random.randint(inputs.size()[-1] - 1920)
-        output = self.udiscriminator8(inputs[:, :, index : index + 1920])
-        outputs.append(output)
-        index = np.random.randint(inputs.size()[-1] - 3600)
-        output = self.udiscriminator15(inputs[:, :, index : index + 3600])
-        outputs.append(output)
-        
+        for (size, layer) in zip(self.window_size, self.udiscriminators):
+            size = size * self.upsample_factor
+            index = np.random.randint(real_samples.size()[-1] - size)
+
+            real_output, real_feature = layer(real_samples[:, :, index : index + size])
+            real_outputs.append(real_output)
+            real_features.extend(real_feature)
+
+            fake_output, fake_feature = layer(fake_samples[:, :, index : index + size])
+            fake_outputs.append(fake_output)
+            fake_features.extend(fake_feature)
+
         #conditional discriminator
-        lc_index = np.random.randint(conditions.size()[-1] - 2)
-        x = inputs[:, :, lc_index * 120 : (lc_index + 2) * 120]
-        lc = conditions[:, :, lc_index : lc_index + 2]
-        output = self.discriminator1(x, lc)
-        outputs.append(output)
-        lc_index = np.random.randint(conditions.size()[-1] - 4)
-        x = inputs[:, :, lc_index * 120 : (lc_index + 4) * 120]
-        lc = conditions[:, :, lc_index : lc_index + 4]
-        output = self.discriminator2(x, lc)
-        outputs.append(output)
-        lc_index = np.random.randint(conditions.size()[-1] - 8)
-        x = inputs[:, :, lc_index * 120 : (lc_index + 8) * 120]
-        lc = conditions[:, :, lc_index : lc_index + 8]
-        output = self.discriminator4(x, lc)
-        outputs.append(output)
-        lc_index = np.random.randint(conditions.size()[-1] - 16)
-        x = inputs[:, :, lc_index * 120 : (lc_index + 16) * 120]
-        lc = conditions[:, :, lc_index : lc_index + 16]
-        output = self.discriminator8(x, lc)
-        outputs.append(output)
-        lc_index = np.random.randint(conditions.size()[-1] - 30)
-        x = inputs[:, :, lc_index * 120 : (lc_index + 30) * 120]
-        lc = conditions[:, :, lc_index : lc_index + 30]
-        output = self.discriminator15(x, lc)
-        outputs.append(output)
-        
-        outputs = sum(outputs) / len(outputs)
-        
-        return outputs
+        for (size, layer) in zip(self.window_size, self.discriminators): 
+            lc_index = np.random.randint(conditions.size()[-1] - size)
+            sample_index = lc_index * self.upsample_factor
+            real_x = real_samples[:, :, sample_index : (lc_index + size) * self.upsample_factor]
+            fake_x = fake_samples[:, :, sample_index : (lc_index + size) * self.upsample_factor]
+            lc = conditions[:, :, lc_index : lc_index + size]
+
+            real_output, real_feature = layer(real_x, lc)
+            real_outputs.append(real_output)
+            real_features.extend(real_feature)
+            fake_output, fake_feature = layer(fake_x, lc)
+            fake_outputs.append(fake_output)
+            fake_features.extend(fake_feature)
+             
+        return real_outputs, fake_outputs, real_features, fake_features 
  
 class CondDBlock(nn.Module):
     def __init__(self,
@@ -313,32 +300,36 @@ class ConditionalDBlocks(nn.Module):
         self.lc_channels = lc_channels
         self.factors = factors
         self.out_channels = out_channels
-        
-        lists = []
-        lists.append(DBlock(in_channels, 64, 1))
+
+        self.layers = nn.ModuleList()
+        self.layers.append(DBlock(in_channels, 64, 1))
         in_channels = 64
         for (i, channel) in enumerate(out_channels):
-            lists.append(DBlock(in_channels, channel, factors[i]))
+            self.layers.append(DBlock(in_channels, channel, factors[i]))
             in_channels = channel
-        self.layers = nn.Sequential(*lists)
         
         self.cond_layer = CondDBlock(in_channels, lc_channels, factors[-1])
         
-        self.end = nn.Sequential(
+        self.post_process = nn.ModuleList([
             DBlock(in_channels * 2, in_channels * 2, 1),
             DBlock(in_channels * 2, in_channels * 2, 1),
-            DBlock(in_channels * 2, 1, 1),
-        )
+            DBlock(in_channels * 2, 1, 1)
+        ])
         
     def forward(self, inputs, conditions):
         batch_size = inputs.size()[0]
-        inputs = inputs.view(batch_size, self.in_channels, -1)
-        outputs = self.layers(inputs)
+        outputs = inputs.view(batch_size, self.in_channels, -1)
+        lists = []
+        for layer in self.layers:
+            outputs = layer(outputs)
+            lists.append(outputs)
         outputs = self.cond_layer(outputs, conditions)
-        outputs = self.end(outputs)
-        
-        outputs = outputs.mean()
-        return outputs
+        lists.append(outputs)
+        for layer in self.post_process:
+            outputs = layer(outputs)
+            lists.append(outputs)
+
+        return lists[-1], lists[:-1]
     
 class UnConditionalDBlocks(nn.Module):
     def __init__(self,
@@ -350,63 +341,46 @@ class UnConditionalDBlocks(nn.Module):
         self.in_channels = in_channels
         self.factors = factors
         self.out_channels = out_channels
-        
-        lists = []
-        lists.append(DBlock(in_channels, 64, 1))
+       
+        self.layers = nn.ModuleList()
+        self.layers.append(DBlock(in_channels, 64, 1))
         in_channels = 64
         for (i, factor) in enumerate(factors):
-            lists.append(DBlock(in_channels, out_channels[i], factor))
+            self.layers.append(DBlock(in_channels, out_channels[i], factor))
             in_channels = out_channels[i]
-        lists.append(DBlock(in_channels, in_channels, 1))
-        lists.append(DBlock(in_channels, in_channels, 1))
-        lists.append(DBlock(in_channels, 1, 1))
-        
-        self.layers = nn.Sequential(*lists)
+        self.layers.append(DBlock(in_channels, in_channels, 1))
+        self.layers.append(DBlock(in_channels, in_channels, 1))
+        self.layers.append(DBlock(in_channels, 1, 1))
         
     def forward(self, inputs):
         batch_size = inputs.size()[0]
-        inputs = inputs.view(batch_size, self.in_channels, -1)
-        outputs = self.layers(inputs)
-        outputs = outputs.mean()
-        
-        return outputs
+        outputs = inputs.view(batch_size, self.in_channels, -1)
+        lists = []
+        for layer in self.layers:
+            outputs = layer(outputs)
+            lists.append(outputs)
+
+        return lists[-1], lists[:-1]
 
 class UpsampleNet(nn.Module):
     def __init__(self,
                  input_size,
                  output_size,
-                 upsample_factor,
-                 upsample_method="duplicate"):
+                 upsample_factor):
 
         super(UpsampleNet, self).__init__()
-        self.upsample_method = upsample_method
+        self.input_size = input_size
+        self.output_size = output_size
         self.upsample_factor = upsample_factor
-        
-        if upsample_method == 'duplicate':
-            self.upsample_factor = int(np.prod(upsample_factor))
-        elif upsample_method == 'transposed_conv2d':
-            assert isinstance(upsample_factor, tuple)
-            kernel_size = 3
-            self.upsamples = nn.ModuleList()
-            for u in upsample_factor:
-                padding = (kernel_size - 1) // 2
-                conv = spectral_norm(nn.ConvTranspose2d(1, 1, (kernel_size, 2 * u),
-                                          padding=(padding, u // 2),
-                                          dilation=1, stride=(1, u)))
-                self.upsamples.append(conv)
+
+        self.layer = spectral_norm(nn.ConvTranspose1d(input_size, output_size,
+                 upsample_factor * 2, upsample_factor, padding=upsample_factor // 2))
 
     def forward(self, inputs):
-        if self.upsample_method == 'duplicate':
-            output = F.interpolate(inputs, scale_factor=self.upsample_factor,
-                                   mode='nearest')
-        elif self.upsample_method == 'transposed_conv2d':
-            output = input.unsqueeze(1)
-            for layer in self.upsamples:
-                output = layer(output)
-            output = output.squeeze(1)
-            output = output[:, :, : input.size(-1) * np.prod(self.upsample_factor)]
+        outputs = self.layer(inputs)
+        outputs = outputs[:, :, : inputs.size(-1) * self.upsample_factor]
 
-        return output
+        return outputs
 
 
 '''
