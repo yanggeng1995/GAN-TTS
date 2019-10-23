@@ -1,6 +1,8 @@
 # GAN-TTS
 A pytorch implementation of the GAN-TTS: HIGH FIDELITY SPEECH SYNTHESIS WITH ADVERSARIAL NETWORKS(https://arxiv.org/pdf/1909.11646.pdf)
 
+![](./images/gan-tts.jpg)
+
 ## Prepare dataset
 * Download dataset for training. This can be any wav files with sample rate 24000Hz.
 * Process: python process.py.py --wav_dir="wavs" --output="data"
