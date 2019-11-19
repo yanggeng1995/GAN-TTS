@@ -2,16 +2,18 @@ import torch
 from utils.dataset import CustomerDataset, CustomerCollate
 from torch.utils.data import DataLoader
 import torch.nn.parallel.data_parallel as parallel
+import torch.nn.functional as F
 import torch.optim as optim
 import torch.nn as nn
 import argparse
 import os
 import time
-from models.modules import Generator, Multiple_Random_Window_Discriminators
+from models.generator import Generator
+from models.discriminator import Multiple_Random_Window_Discriminators
 from tensorboardX import SummaryWriter
 from utils.optimizer import Optimizer
 from utils.audio import hop_length
-from utils.util import ExponentialMovingAverage, apply_moving_average, register_model_to_ema
+from utils.loss import MultiResolutionSTFTLoss
 
 def create_model(args):
 
@@ -21,7 +23,7 @@ def create_model(args):
     return generator, discriminator
 
 def save_checkpoint(args, generator, discriminator,
-                    g_optimizer, d_optimizer, step, ema=None):
+                    g_optimizer, d_optimizer, step):
     checkpoint_path = os.path.join(args.checkpoint_dir, "model.ckpt-{}.pt".format(step))
 
     torch.save({"generator": generator.state_dict(),
@@ -31,21 +33,10 @@ def save_checkpoint(args, generator, discriminator,
                 "global_step": step
                 }, checkpoint_path)
 
-    if ema is not None:
-        ema_checkpoint_path = os.path.join(args.ema_checkpoint_dir, "model.ckpt-{}.ema".format(step))
-        averge_model = clone_as_averaged_model(args, generator, ema)
-        torch.save({"generator": averge_model.state_dict(),
-                    "g_optimizer": g_optimizer.state_dict(),
-                    "global_step": step
-                  }, ema_checkpoint_path)
-
     print("Saved checkpoint: {}".format(checkpoint_path))
 
     with open(os.path.join(args.checkpoint_dir, 'checkpoint'), 'w') as f:
         f.write("model.ckpt-{}.pt".format(step))
-
-    with open(os.path.join(args.ema_checkpoint_dir, 'checkpoint'), 'w') as f:
-        f.write("model.ckpt-{}.ema".format(step))
 
 def attempt_to_restore(generator, discriminator, g_optimizer,
                        d_optimizer, checkpoint_dir, use_cuda):
@@ -77,29 +68,9 @@ def load_checkpoint(checkpoint_path, use_cuda):
 
     return checkpoint
 
-def clone_as_averaged_model(args, model, ema):
-    device = torch.device("cuda" if args.use_cuda else "cpu")
-
-    assert ema is not None
-    averaged_model, _ = create_model(args)
-    averaged_model = averaged_model.to(device)
-    averaged_model.load_state_dict(model.state_dict())
-    for name, param in averaged_model.named_parameters():
-        if name in ema.shadow:
-            param.data = ema.shadow[name].clone()
-
-    return averaged_model
-
-def feature_loss_calculate(real_outputs, fake_outputs):
-    loss = []
-    for (real_output, fake_output) in zip(real_outputs, fake_outputs):
-        loss.append(torch.abs(real_output - fake_output).mean())
-    return sum(loss)
-
 def train(args):
 
     os.makedirs(args.checkpoint_dir, exist_ok=True)
-    os.makedirs(args.ema_checkpoint_dir, exist_ok=True)
 
     train_dataset = CustomerDataset(
          args.input,
@@ -133,14 +104,12 @@ def train(args):
                                           d_optimizer, args.resume, args.use_cuda)
         global_step = restore_step
 
-    ema = ExponentialMovingAverage(args.ema_decay)
-    register_model_to_ema(generator, ema)
-
     customer_g_optimizer = Optimizer(g_optimizer, args.g_learning_rate,
                 global_step, args.warmup_steps, args.decay_learning_rate)
     customer_d_optimizer = Optimizer(d_optimizer, args.d_learning_rate,
                 global_step, args.warmup_steps, args.decay_learning_rate)
 
+    stft_criterion = MultiResolutionSTFTLoss().to(device)
     criterion = nn.MSELoss().to(device)
 
     for epoch in range(args.epochs):
@@ -165,65 +134,92 @@ def train(args):
             conditions = conditions[:batch_size, :, :].to(device)
             z = torch.randn(batch_size, args.z_dim).to(device)
 
-            #train generator
+            losses = {}
+
             if num_gpu > 1:
                 g_outputs = parallel(generator, (conditions, z))
-                _, fake_outputs, real_features, fake_features = \
-                   parallel(discriminator, (samples, g_outputs, conditions))
             else:
                 g_outputs = generator(conditions, z)
-                _, fake_outputs, real_features, fake_features = \
-                   discriminator(samples, g_outputs, conditions)
 
-            g_d_loss = []
+            #train discriminator
+            if global_step > args.discriminator_train_start_steps:
+                if num_gpu > 1:
+                    real_outputs, fake_outputs = \
+                        parallel(discriminator, (samples, g_outputs.detach(), conditions))
+                else:
+                    real_outputs, fake_outputs = \
+                        discriminator(samples, g_outputs.detach(), conditions)
+
+                fake_loss, real_loss = [], []
+                for (fake_output, real_output) in zip(fake_outputs, real_outputs):
+                    fake_loss.append(criterion(fake_output, torch.zeros_like(fake_output)))
+                    real_loss.append(criterion(real_output, torch.ones_like(real_output)))
+                #fake_loss = sum(fake_loss) / 10.0
+                #real_loss = sum(real_loss) / 10.0
+                fake_loss = sum(fake_loss)
+                real_loss = sum(real_loss)
+
+                d_loss = fake_loss + real_loss
+
+                customer_d_optimizer.zero_grad()
+                d_loss.backward()
+                nn.utils.clip_grad_norm_(d_parameters, max_norm=0.5)
+                customer_d_optimizer.step_and_update_lr()
+            else:
+                d_loss = torch.Tensor([0])
+                fake_loss = torch.Tensor([0])
+                real_loss = torch.Tensor([0])
+
+            losses['fake_loss'] = fake_loss.item()
+            losses['real_loss'] = real_loss.item()
+            losses['d_loss'] = d_loss.item()
+
+            #train generator
+            if num_gpu > 1:
+                _, fake_outputs = parallel(discriminator, (samples, g_outputs, conditions))
+            else:
+                _, fake_outputs = discriminator(samples, g_outputs, conditions)
+
+            adv_loss = []
             for fake_output in fake_outputs:
-               target = torch.ones_like(fake_output).to(device)
-               g_d_loss.append(criterion(fake_output, target))
-            feature_loss = feature_loss_calculate(real_features, fake_features)
-            g_loss = feature_loss * args.lamda + sum(g_d_loss)
+               adv_loss.append(criterion(fake_output, torch.ones_like(fake_output)))
+
+            #adv_loss = sum(adv_loss) / 10.0
+            adv_loss = sum(adv_loss)
+
+            sc_loss, mag_loss = stft_criterion(g_outputs.squeeze(1), samples.squeeze(1))
+
+            if global_step > args.discriminator_train_start_steps:
+               g_loss = adv_loss * args.lamda_adv + sc_loss + mag_loss 
+            else:
+               g_loss = sc_loss + mag_loss
+
+            losses['adv_loss'] = adv_loss.item()
+            losses['sc_loss'] = sc_loss
+            losses['mag_loss'] = mag_loss
+            losses['g_loss'] = g_loss.item()
  
             customer_g_optimizer.zero_grad()
             g_loss.backward()
             nn.utils.clip_grad_norm_(g_parameters, max_norm=0.5)
             customer_g_optimizer.step_and_update_lr()
 
-            #train discriminator
-            g_outputs = g_outputs.detach()
-            if num_gpu > 1:
-                real_outputs, fake_outputs, _, _ = \
-                    parallel(discriminator, (samples, g_outputs, conditions))
+            time_used = time.time() - start
+            if global_step > args.discriminator_train_start_steps:
+                print("Step: {} --adv_loss: {:.3f} --real_loss: {:.3f} --fake_loss: {:.3f} --sc_loss: {:.3f} --mag_loss: {:.3f} --Time: {:.2f} seconds".format(
+                   global_step, adv_loss, real_loss, fake_loss, sc_loss, mag_loss, time_used))
             else:
-                real_outputs, fake_outputs, _, _ = \
-                    discriminator(samples, g_outputs, conditions)
-
-            fake_loss, real_loss = [], []
-            for (fake_output, real_output) in zip(fake_outputs, real_outputs):
-                fake_target = torch.zeros_like(fake_output).to(device)
-                real_target = torch.ones_like(real_output).to(device)
-                fake_loss.append(criterion(fake_output, fake_target))
-                real_loss.append(criterion(real_output, real_target))
-            d_loss = sum(fake_loss) + sum(real_loss)
-
-            customer_d_optimizer.zero_grad()
-            d_loss.backward()
-            nn.utils.clip_grad_norm_(d_parameters, max_norm=0.5)
-            customer_d_optimizer.step_and_update_lr()
+                print("Step: {} --sc_loss: {:.3f} --mag_loss: {:.3f} --Time: {:.2f} seconds".format(global_step, sc_loss, mag_loss, time_used))
 
             global_step += 1
 
-            print("Step: {} --g_loss: {:.3f} --d_loss: {:.3f} --Time: {:.2f} seconds".format(
-                   global_step, g_loss, d_loss, float(time.time() - start)))
-            print(feature_loss.item(), sum(g_d_loss).item(), d_loss.item())
-            if ema is not None:
-                apply_moving_average(generator, ema)
-
-            if global_step % args.checkpoint_step ==0:
+            if global_step % args.checkpoint_step == 0:
                 save_checkpoint(args, generator, discriminator,
-                    g_optimizer, d_optimizer, global_step, ema)
+                         g_optimizer, d_optimizer, global_step)
                 
             if global_step % args.summary_step == 0:
-                writer.add_scalar("g_loss", g_loss.item(), global_step)
-                writer.add_scalar("d_loss", d_loss.item(), global_step)
+                for key in losses:
+                    writer.add_scalar('{}'.format(key), losses[key], global_step)
 
 def main():
 
@@ -240,20 +236,19 @@ def main():
     parser.add_argument('--epochs', type=int, default=50000)
     parser.add_argument('--checkpoint_dir', type=str, default="logdir", help="Directory to save model")
     parser.add_argument('--resume', type=str, default=None, help="The model name to restore")
-    parser.add_argument('--checkpoint_step', type=int, default=2000)
-    parser.add_argument('--summary_step', type=int, default=1)
+    parser.add_argument('--checkpoint_step', type=int, default=5000)
+    parser.add_argument('--summary_step', type=int, default=100)
     parser.add_argument('--use_cuda', type=_str_to_bool, default=True)
     parser.add_argument('--g_learning_rate', type=float, default=0.0001)
     parser.add_argument('--d_learning_rate', type=float, default=0.00005)
-    parser.add_argument('--warmup_steps', type=int, default=40000)
+    parser.add_argument('--warmup_steps', type=int, default=200000)
     parser.add_argument('--decay_learning_rate', type=float, default=0.5)
     parser.add_argument('--local_condition_dim', type=int, default=80)
     parser.add_argument('--z_dim', type=int, default=128)
-    parser.add_argument('--batch_size', type=int, default=80)
-    parser.add_argument('--condition_window', type=int, default=100)
-    parser.add_argument('--ema_decay', type=float, default=0.9999)
-    parser.add_argument('--ema_checkpoint_dir', type=str, default="ema_logdir")
-    parser.add_argument('--lamda', type=float, default=10)
+    parser.add_argument('--batch_size', type=int, default=30)
+    parser.add_argument('--condition_window', type=int, default=80)
+    parser.add_argument('--lamda_adv', type=float, default=1.0)
+    parser.add_argument('--discriminator_train_start_steps', type=int, default=100000)
 
     args = parser.parse_args()
     train(args)

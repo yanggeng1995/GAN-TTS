@@ -81,8 +81,9 @@ class CustomerCollate(object):
             
         sample_batch = np.stack(sample_batch)
         condition_batch = np.stack(condition_batch)
-        condition_batch = mu_law_encode(condition_batch)
-        condition_batch = mu_law_decode(condition_batch) 
+        sample_batch = mu_law_encode(sample_batch)
+        sample_batch = mu_law_decode(sample_batch)
+ 
         samples = torch.FloatTensor(sample_batch).transpose(1, 2)
         conditions = torch.FloatTensor(condition_batch).transpose(1, 2)
  

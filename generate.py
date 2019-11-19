@@ -4,7 +4,8 @@ import argparse
 import os
 import time
 import numpy as np
-from models.modules import Generator
+from models.generator import Generator
+from utils.util import mu_law_encode, mu_law_decode 
 
 def attempt_to_restore(generate, checkpoint_dir, use_cuda):
     checkpoint_list = os.path.join(checkpoint_dir, 'checkpoint')
@@ -57,14 +58,15 @@ def synthesis(args):
     conditions = torch.FloatTensor(conditions)
     conditions = conditions.transpose(1, 2).to(device)
     batch_size = conditions.size()[0]
-    z = torch.randn(batch_size, args.z_dim).to(device)
+    z = torch.randn(batch_size, args.z_dim).to(device).normal_(0.0, 0.6)
     print(conditions.shape)
     audios = model(conditions, z)
-    audios = audios.squeeze().detach().numpy()
+    audios = audios.cpu().squeeze().detach().numpy()
     print(audios.shape)
     for (i, filename) in enumerate(lists):
         name = filename.split('.')[0]
         sample = np.load(os.path.join(args.input, 'audio', filename))
+        sample = mu_law_decode(mu_law_encode(sample))
         save_wav(np.squeeze(sample), '{}/{}_target.wav'.format(output_dir, name))
         save_wav(np.asarray(audios[i])[:len(sample)], '{}/{}.wav'.format(output_dir, name))
     print("Time used: {:.3f}".format(time.time() - start))
