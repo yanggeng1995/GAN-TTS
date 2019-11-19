@@ -15,6 +15,9 @@ A pytorch implementation of the GAN-TTS: HIGH FIDELITY SPEECH SYNTHESIS WITH ADV
 ## Inference
 * python generate.py --input="data/test"
 
+## Result
+* You can find the results in the samples directory.
+
 ## Attention
 * I did not use the loss function mentioned in the paper. I modified the loss function and learn from ParallelWaveGAN(https://arxiv.org/pdf/1910.11480.pdf).
 
