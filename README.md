@@ -5,7 +5,7 @@ A pytorch implementation of the GAN-TTS: HIGH FIDELITY SPEECH SYNTHESIS WITH ADV
 
 ## Prepare dataset
 * Download dataset for training. This can be any wav files with sample rate 24000Hz.
-* Process: python process.py.py --wav_dir="wavs" --output="data"
+* Process: python process.py --wav_dir="wavs" --output="data"
 * Edit configuration in utils/audio.py
 
 ## Train & Tensorboard
