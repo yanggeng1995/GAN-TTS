@@ -25,6 +25,7 @@ A pytorch implementation of the GAN-TTS: HIGH FIDELITY SPEECH SYNTHESIS WITH ADV
 
 ## Notes
 * This is not official implementation, some details are not necessarily correct.
+* In order to accelerate convergence, I modified some network structures and loss functions.
 
 ## Reference
 * kan-bayashi/ParallelWaveGAN(https://github.com/kan-bayashi/ParallelWaveGAN)
