@@ -2,7 +2,6 @@ import torch
 from utils.dataset import CustomerDataset, CustomerCollate
 from torch.utils.data import DataLoader
 import torch.nn.parallel.data_parallel as parallel
-import torch.nn.functional as F
 import torch.optim as optim
 import torch.nn as nn
 import argparse
@@ -10,6 +9,7 @@ import os
 import time
 from models.generator import Generator
 from models.discriminator import Multiple_Random_Window_Discriminators
+from models.v2_discriminator import Discriminator
 from tensorboardX import SummaryWriter
 from utils.optimizer import Optimizer
 from utils.audio import hop_length
@@ -18,12 +18,13 @@ from utils.loss import MultiResolutionSTFTLoss
 def create_model(args):
 
     generator = Generator(args.local_condition_dim, args.z_dim)
-    discriminator = Multiple_Random_Window_Discriminators(args.local_condition_dim)
-    
+    #discriminator = Multiple_Random_Window_Discriminators(args.local_condition_dim)
+    discriminator = Discriminator()
+
     return generator, discriminator
 
 def save_checkpoint(args, generator, discriminator,
-                    g_optimizer, d_optimizer, step):
+                    g_optimizer, d_optimizer, step, ema=None):
     checkpoint_path = os.path.join(args.checkpoint_dir, "model.ckpt-{}.pt".format(step))
 
     torch.save({"generator": generator.state_dict(),
@@ -93,7 +94,7 @@ def train(args):
 
     d_parameters = list(discriminator.parameters())
     d_optimizer = optim.Adam(d_parameters, lr=args.d_learning_rate)
-    
+
     writer = SummaryWriter(args.checkpoint_dir)
 
     generator.to(device)
@@ -144,20 +145,14 @@ def train(args):
             #train discriminator
             if global_step > args.discriminator_train_start_steps:
                 if num_gpu > 1:
-                    real_outputs, fake_outputs = \
-                        parallel(discriminator, (samples, g_outputs.detach(), conditions))
+                    real_output = parallel(discriminator, (samples, ))
+                    fake_output = parallel(discriminator, (g_outputs.detach(), ))
                 else:
-                    real_outputs, fake_outputs = \
-                        discriminator(samples, g_outputs.detach(), conditions)
+                    real_output = discriminator(samples, )
+                    fake_output = discriminator(g_outputs.detach(), )
 
-                fake_loss, real_loss = [], []
-                for (fake_output, real_output) in zip(fake_outputs, real_outputs):
-                    fake_loss.append(criterion(fake_output, torch.zeros_like(fake_output)))
-                    real_loss.append(criterion(real_output, torch.ones_like(real_output)))
-                #fake_loss = sum(fake_loss) / 10.0
-                #real_loss = sum(real_loss) / 10.0
-                fake_loss = sum(fake_loss)
-                real_loss = sum(real_loss)
+                fake_loss = criterion(fake_output, torch.zeros_like(fake_output))
+                real_loss = criterion(real_output, torch.ones_like(real_output))
 
                 d_loss = fake_loss + real_loss
 
@@ -176,21 +171,16 @@ def train(args):
 
             #train generator
             if num_gpu > 1:
-                _, fake_outputs = parallel(discriminator, (samples, g_outputs, conditions))
+                fake_output = parallel(discriminator, (g_outputs, ))
             else:
-                _, fake_outputs = discriminator(samples, g_outputs, conditions)
+                fake_output = discriminator(g_outputs)
 
-            adv_loss = []
-            for fake_output in fake_outputs:
-               adv_loss.append(criterion(fake_output, torch.ones_like(fake_output)))
-
-            #adv_loss = sum(adv_loss) / 10.0
-            adv_loss = sum(adv_loss)
+            adv_loss = criterion(fake_output, torch.ones_like(fake_output))
 
             sc_loss, mag_loss = stft_criterion(g_outputs.squeeze(1), samples.squeeze(1))
 
             if global_step > args.discriminator_train_start_steps:
-               g_loss = adv_loss * args.lamda_adv + sc_loss + mag_loss 
+               g_loss = adv_loss * args.lamda_adv + sc_loss + mag_loss
             else:
                g_loss = sc_loss + mag_loss
 
@@ -198,7 +188,7 @@ def train(args):
             losses['sc_loss'] = sc_loss
             losses['mag_loss'] = mag_loss
             losses['g_loss'] = g_loss.item()
- 
+
             customer_g_optimizer.zero_grad()
             g_loss.backward()
             nn.utils.clip_grad_norm_(g_parameters, max_norm=0.5)
@@ -216,7 +206,7 @@ def train(args):
             if global_step % args.checkpoint_step == 0:
                 save_checkpoint(args, generator, discriminator,
                          g_optimizer, d_optimizer, global_step)
-                
+
             if global_step % args.summary_step == 0:
                 for key in losses:
                     writer.add_scalar('{}'.format(key), losses[key], global_step)
@@ -240,14 +230,14 @@ def main():
     parser.add_argument('--summary_step', type=int, default=100)
     parser.add_argument('--use_cuda', type=_str_to_bool, default=True)
     parser.add_argument('--g_learning_rate', type=float, default=0.0001)
-    parser.add_argument('--d_learning_rate', type=float, default=0.00005)
+    parser.add_argument('--d_learning_rate', type=float, default=0.0001)
     parser.add_argument('--warmup_steps', type=int, default=200000)
     parser.add_argument('--decay_learning_rate', type=float, default=0.5)
     parser.add_argument('--local_condition_dim', type=int, default=80)
     parser.add_argument('--z_dim', type=int, default=128)
     parser.add_argument('--batch_size', type=int, default=30)
-    parser.add_argument('--condition_window', type=int, default=80)
-    parser.add_argument('--lamda_adv', type=float, default=1.0)
+    parser.add_argument('--condition_window', type=int, default=100)
+    parser.add_argument('--lamda_adv', type=float, default=4.0)
     parser.add_argument('--discriminator_train_start_steps', type=int, default=100000)
 
     args = parser.parse_args()
