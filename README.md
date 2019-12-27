@@ -21,7 +21,6 @@ A pytorch implementation of the GAN-TTS: HIGH FIDELITY SPEECH SYNTHESIS WITH ADV
 ## Attention
 * I did not use the loss function mentioned in the paper. I modified the loss function and learn from ParallelWaveGAN(https://arxiv.org/pdf/1910.11480.pdf).
 * I did not use linguistic features, I use mel spectrogram, so the model can be considered a vocoder.
-* I modified the discriminator and used a single discriminator. Experiments show that the combination of multiple discriminators and stft loss makes the result not ideal. A single discriminator will perform better.
 
 ## Notes
 * This is not official implementation, some details are not necessarily correct.
